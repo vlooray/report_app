@@ -109,15 +109,14 @@ if uploaded_file:
         Total_Qty=('Qty', 'sum'),
         Total_MID=('MID', 'nunique')
     ).reset_index()
-    rekap_wavepick['Durasi'] = rekap_wavepick['Last_Confirm'] - rekap_wavepick['First_Confirm']
-    rekap_wavepick['Durasi'] = rekap_wavepick['Durasi'].apply(lambda x: str(x).split('.')[0])
+    rekap_wavepick['Durasi_td'] = rekap_wavepick['Last_Confirm'] - rekap_wavepick['First_Confirm']
+    rekap_wavepick['Durasi'] = rekap_wavepick['Durasi_td'].apply(lambda x: str(x).split('.')[0])
 
-    rata2_durasi = pd.to_timedelta(rekap_wavepick['Durasi']).mean()
+    rata2_durasi = rekap_wavepick['Durasi_td'].mean()
 
     # Top 3 longest wavepick
     top3_wavepick = rekap_wavepick.copy()
-    top3_wavepick['Durasi_td'] = pd.to_timedelta(top3_wavepick['Durasi'])
-    top3_wavepick = top3_wavepick.sort_values('Durasi_td', ascending=False).head(3)[['Wavepick', 'Durasi']]
+    top3_wavepick = top3_wavepick.sort_values('Durasi_td', ascending=False).head(3)
 
     # 2. Rata-rata durasi dan kontribusi zona
     zona_rekap = wavepick_c.groupby(['ZONA', 'Wavepick']).agg(
@@ -168,7 +167,7 @@ if uploaded_file:
         st.metric("👷 Rata-rata Durasi Picking Operator", str(rata2_durasi_operator).split('.')[0])
 
     st.subheader("⏱️ Top 3 Wavepick dengan Durasi Tertinggi")
-    st.dataframe(top3_wavepick, use_container_width=True)
+    st.dataframe(top3_wavepick[['Wavepick', 'Durasi', 'First_Confirm', 'Last_Confirm']], use_container_width=True)
 
     st.subheader("📍 Top 3 Zona dengan Durasi Tertinggi")
     st.dataframe(top3_zona[['ZONA', 'Durasi']], use_container_width=True)

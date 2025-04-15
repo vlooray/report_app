@@ -157,7 +157,10 @@ if uploaded_file:
         Durasi=('Durasi', lambda x: str(x.max()).split('.')[0])
     ).reset_index()
 
+    rata2_durasi_operator = pd.to_timedelta(operator_df['Durasi']).mean()
+
     st.subheader("👷 Operator Picking Summary - STYPE RB1")
+    st.markdown(f"**Rata-rata Durasi Picking Operator:** {str(rata2_durasi_operator).split('.')[0]}")
     st.dataframe(operator_summary, use_container_width=True)
 
 else:

@@ -10,6 +10,9 @@ Original file is located at
 import streamlit as st
 import pandas as pd
 import datetime
+import io
+import xlrd
+from openpyxl import Workbook
 
 st.set_page_config(page_title="Wavepick Reporting", layout="wide")
 st.title("\U0001F4CA Wavepick Reporting App")
@@ -24,10 +27,27 @@ except Exception as e:
     st.error(f"Gagal load data referensi zona: {e}")
     st.stop()
 
+def convert_xls_to_xlsx(uploaded_file):
+    try:
+        book = xlrd.open_workbook(file_contents=uploaded_file.read())
+        sheet = book.sheet_by_index(0)
+        wb = Workbook()
+        ws = wb.active
+        for row_idx in range(sheet.nrows):
+            ws.append(sheet.row_values(row_idx))
+        output = io.BytesIO()
+        wb.save(output)
+        output.seek(0)
+        return output
+    except Exception as e:
+        st.error("Gagal konversi file .xls. Mohon upload ulang dalam format .xlsx")
+        st.stop()
+
 if uploaded_file:
     try:
         if uploaded_file.name.endswith(".xls"):
-            df_raw = pd.read_excel(uploaded_file, sheet_name=0, engine="xlrd")
+            xlsx_file = convert_xls_to_xlsx(uploaded_file)
+            df_raw = pd.read_excel(xlsx_file, sheet_name=0)
         else:
             df_raw = pd.read_excel(uploaded_file, sheet_name=0)
     except Exception as e:
@@ -57,8 +77,11 @@ if uploaded_file:
         st.stop()
 
     df['Confirm date'] = pd.to_datetime(df['Confirm date'], errors='coerce')
-    df['Confirm time'] = pd.to_datetime(df['Confirm time'], errors='coerce')
+    df['Confirm time'] = pd.to_datetime(df['Confirm time'], errors='coerce').dt.time
     df['Wavepick created'] = pd.to_datetime(df['Wavepick created'], errors='coerce')
+
+    # Gabungkan confirm date + time
+    df['Confirm datetime'] = pd.to_datetime(df['Confirm date'].astype(str) + ' ' + df['Confirm time'].astype(str), errors='coerce')
 
     stype_to_zona = df_zona.groupby('STYPE')['ZONA'].first().to_dict()
     df['ZONA'] = df['STYPE'].map(stype_to_zona)
@@ -75,63 +98,64 @@ if uploaded_file:
     df['ZONA'] = df['ZONA'].replace(zona_map)
     df['ZONA'] = df['ZONA'].fillna('Unmapped')
 
-    df['TimeStr'] = df['Confirm time'].dt.time.astype(str)
-    valid_confirm = df[(df['Confirm time'].notna()) & (df['TimeStr'] != '00:00:00')].copy()
+    df['TimeStr'] = df['Confirm datetime'].dt.time.astype(str)
+    valid_confirm = df[(df['Confirm datetime'].notna()) & (df['TimeStr'] != '00:00:00')].copy()
 
-    # 1. Rata-rata durasi picking per wavepick
     wavepick_c = valid_confirm[valid_confirm['Flag'] == 'C']
-    durasi_wavepick = wavepick_c.groupby('Wavepick').agg(
-        First_Confirm=('Confirm time', 'min'),
-        Last_Confirm=('Confirm time', 'max')
-    ).reset_index()
-    durasi_wavepick['Duration'] = durasi_wavepick['Last_Confirm'] - durasi_wavepick['First_Confirm']
-    durasi_wavepick['Duration'] = durasi_wavepick['Duration'].apply(lambda x: str(x).split('.')[0])
-    durasi_wavepick['Tanggal'] = durasi_wavepick['First_Confirm'].dt.date
 
-    st.subheader("⏳ Rata-Rata Durasi Picking per Wavepick")
-    st.dataframe(durasi_wavepick[['Wavepick', 'Tanggal', 'Duration']], use_container_width=True)
-
-    # 2. Rekap wavepick dengan flag C
+    # 1. Rekap wavepick dengan flag C + rata-rata durasi
     rekap_wavepick = wavepick_c.groupby('Wavepick').agg(
-        First_Confirm=('Confirm time', 'min'),
-        Last_Confirm=('Confirm time', 'max'),
+        First_Confirm=('Confirm datetime', 'min'),
+        Last_Confirm=('Confirm datetime', 'max'),
         Total_Qty=('Qty', 'sum'),
         Total_MID=('MID', 'nunique')
     ).reset_index()
     rekap_wavepick['Durasi'] = rekap_wavepick['Last_Confirm'] - rekap_wavepick['First_Confirm']
     rekap_wavepick['Durasi'] = rekap_wavepick['Durasi'].apply(lambda x: str(x).split('.')[0])
 
+    rata2_durasi = pd.to_timedelta(rekap_wavepick['Durasi']).mean()
+
+    st.markdown("## ⏱️ Rata-rata Durasi Picking Hari Ini")
+    st.markdown(f"### {str(rata2_durasi).split('.')[0]}")
+
     st.subheader("📦 Rekap Wavepick dengan Flag C")
     st.dataframe(rekap_wavepick, use_container_width=True)
 
-    # 3. Rata-rata durasi dan kontribusi zona
+    # 2. Rata-rata durasi dan kontribusi zona
     zona_rekap = wavepick_c.groupby(['ZONA', 'Wavepick']).agg(
-        First=('Confirm time', 'min'),
-        Last=('Confirm time', 'max'),
+        First=('Confirm datetime', 'min'),
+        Last=('Confirm datetime', 'max'),
         Qty=('Qty', 'sum'),
         MID=('MID', 'nunique')
     ).reset_index()
     zona_rekap['Durasi'] = zona_rekap['Last'] - zona_rekap['First']
 
+    # Cari last confirm zone per wavepick
+    last_confirm_per_wavepick = wavepick_c.loc[wavepick_c.groupby('Wavepick')['Confirm datetime'].idxmax()]
+    last_confirm_count = last_confirm_per_wavepick['ZONA'].value_counts().reset_index()
+    last_confirm_count.columns = ['ZONA', 'Total_Last_Confirm']
+
     zona_summary = zona_rekap.groupby('ZONA').agg(
         Avg_Durasi=('Durasi', lambda x: str(pd.to_timedelta(x).mean()).split('.')[0]),
-        Avg_Qty=('Qty', 'mean'),
-        Total_Last_Confirm=('Wavepick', 'count')
+        Avg_Qty=('Qty', 'mean')
     ).reset_index()
+
+    zona_summary = zona_summary.merge(last_confirm_count, on='ZONA', how='left').fillna(0)
+    zona_summary['Total_Last_Confirm'] = zona_summary['Total_Last_Confirm'].astype(int)
 
     st.subheader("🏷️ Rata-rata Durasi & Kontribusi Zona")
     st.dataframe(zona_summary, use_container_width=True)
 
-    # 4. Operator (STYPE RB1)
+    # 3. Operator (STYPE RB1)
     operator_df = wavepick_c[wavepick_c['STYPE'] == 'RB1'].copy()
+    first_wavepick_confirm = wavepick_c.groupby('Wavepick')['Confirm datetime'].min().to_dict()
+    operator_df['Wavepick_Start'] = operator_df['Wavepick'].map(first_wavepick_confirm)
+    operator_df['Durasi'] = operator_df['Confirm datetime'] - operator_df['Wavepick_Start']
     operator_summary = operator_df.groupby('Wavepick').agg(
-        First=('Confirm time', 'min'),
-        Last=('Confirm time', 'max'),
         Qty=('Qty', 'sum'),
-        MID=('MID', 'nunique')
+        MID=('MID', 'nunique'),
+        Durasi=('Durasi', lambda x: str(x.max()).split('.')[0])
     ).reset_index()
-    operator_summary['Durasi'] = operator_summary['Last'] - operator_summary['First']
-    operator_summary['Durasi'] = operator_summary['Durasi'].apply(lambda x: str(x).split('.')[0])
 
     st.subheader("👷 Operator Picking Summary - STYPE RB1")
     st.dataframe(operator_summary, use_container_width=True)

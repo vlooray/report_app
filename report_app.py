@@ -14,8 +14,7 @@ import io
 import xlrd
 from openpyxl import Workbook
 
-st.set_page_config(page_title="Wavepick Reporting", layout="wide")
-st.title("\U0001F4CA Wavepick Reporting App")
+st.set_page_config(page_title="WFTP Project", layout="wide")
 
 uploaded_file = st.file_uploader("Upload file Excel", type=["xlsx", "xls"])
 
@@ -115,11 +114,10 @@ if uploaded_file:
 
     rata2_durasi = pd.to_timedelta(rekap_wavepick['Durasi']).mean()
 
-    st.markdown("## ⏱️ Rata-rata Durasi Picking Hari Ini")
-    st.markdown(f"### {str(rata2_durasi).split('.')[0]}")
-
-    st.subheader("📦 Rekap Wavepick dengan Flag C")
-    st.dataframe(rekap_wavepick, use_container_width=True)
+    # Top 3 longest wavepick
+    top3_wavepick = rekap_wavepick.copy()
+    top3_wavepick['Durasi_td'] = pd.to_timedelta(top3_wavepick['Durasi'])
+    top3_wavepick = top3_wavepick.sort_values('Durasi_td', ascending=False).head(3)[['Wavepick', 'Durasi']]
 
     # 2. Rata-rata durasi dan kontribusi zona
     zona_rekap = wavepick_c.groupby(['ZONA', 'Wavepick']).agg(
@@ -130,6 +128,11 @@ if uploaded_file:
     ).reset_index()
     zona_rekap['Durasi'] = zona_rekap['Last'] - zona_rekap['First']
 
+    top3_zona = zona_rekap.groupby('ZONA').agg(
+        RataDurasi=('Durasi', lambda x: pd.to_timedelta(x).mean())
+    ).reset_index().sort_values('RataDurasi', ascending=False).head(3)
+    top3_zona['Durasi'] = top3_zona['RataDurasi'].apply(lambda x: str(x).split('.')[0])
+
     # Cari last confirm zone per wavepick
     last_confirm_per_wavepick = wavepick_c.loc[wavepick_c.groupby('Wavepick')['Confirm datetime'].idxmax()]
     last_confirm_count = last_confirm_per_wavepick['ZONA'].value_counts().reset_index()
@@ -139,12 +142,8 @@ if uploaded_file:
         Avg_Durasi=('Durasi', lambda x: str(pd.to_timedelta(x).mean()).split('.')[0]),
         Avg_Qty=('Qty', 'mean')
     ).reset_index()
-
     zona_summary = zona_summary.merge(last_confirm_count, on='ZONA', how='left').fillna(0)
     zona_summary['Total_Last_Confirm'] = zona_summary['Total_Last_Confirm'].astype(int)
-
-    st.subheader("🏷️ Rata-rata Durasi & Kontribusi Zona")
-    st.dataframe(zona_summary, use_container_width=True)
 
     # 3. Operator (STYPE RB1)
     operator_df = wavepick_c[wavepick_c['STYPE'] == 'RB1'].copy()
@@ -159,9 +158,31 @@ if uploaded_file:
 
     rata2_durasi_operator = pd.to_timedelta(operator_df['Durasi']).mean()
 
+    # ==== SUMMARY SECTION ====
+    report_date = df['Confirm date'].dropna().dt.date.min()
+    st.header(f"📊 DC Outbound Overview - {report_date}")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("⏱️ Rata-rata Durasi Picking Hari Ini", str(rata2_durasi).split('.')[0])
+    with col2:
+        st.metric("👷 Rata-rata Durasi Picking Operator", str(rata2_durasi_operator).split('.')[0])
+
+    st.subheader("⏱️ Top 3 Wavepick dengan Durasi Tertinggi")
+    st.dataframe(top3_wavepick, use_container_width=True)
+
+    st.subheader("📍 Top 3 Zona dengan Durasi Tertinggi")
+    st.dataframe(top3_zona[['ZONA', 'Durasi']], use_container_width=True)
+
+    # ==== DETAIL SECTION ====
+    st.subheader("📦 Rekap Wavepick dengan Flag C")
+    st.dataframe(rekap_wavepick.drop(columns='Durasi_td', errors='ignore'), use_container_width=True)
+
+    st.subheader("🏷️ Rata-rata Durasi & Kontribusi Zona")
+    st.dataframe(zona_summary, use_container_width=True)
+
     st.subheader("👷 Operator Picking Summary - STYPE RB1")
-    st.markdown(f"**Rata-rata Durasi Picking Operator:** {str(rata2_durasi_operator).split('.')[0]}")
     st.dataframe(operator_summary, use_container_width=True)
 
 else:
+    st.title("\U0001F4CA DC Outbound Overview")
     st.info("Silakan upload file Excel untuk mulai.")

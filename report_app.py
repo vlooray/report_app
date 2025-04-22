@@ -21,10 +21,53 @@ uploaded_file = st.file_uploader("Upload file Excel", type=["xlsx", "xls"])
 # Load referensi zona dari file lokal
 try:
     df_zona = pd.read_excel("referensi_zona.xlsx", sheet_name="Zona")
-    df_zona_ps1 = pd.read_excel("referensi_zona.xlsx", sheet_name="Zona PS1")
+    try:
+        df_zona_ps1 = pd.read_excel("referensi_zona.xlsx", sheet_name="Zona PS1")
+    except:
+        df_zona_ps1 = pd.DataFrame(columns=["MID", "ZONA"])
 except Exception as e:
     st.error(f"Gagal load data referensi zona: {e}")
     st.stop()
+
+# Manual Input: Wavepick dan Running Time di dua kolom terpisah
+manual_wavepicks = set()
+manual_running_time = {}
+
+st.subheader("Manual Input Wavepick & Running Time")
+col1, col2 = st.columns(2)
+with col1:
+    wavepick_input = st.text_area("Masukkan daftar Wavepick", placeholder="9017464713\n9017464698")
+with col2:
+    runningtime_input = st.text_area("Masukkan daftar Running Time", placeholder="21 Apr 2025 10:00:26\n21 Apr 2025 10:13:04")
+
+if wavepick_input and runningtime_input:
+    wavepick_lines = wavepick_input.strip().splitlines()
+    runningtime_lines = runningtime_input.strip().splitlines()
+
+    if len(wavepick_lines) == len(runningtime_lines):
+        for wp, rt in zip(wavepick_lines, runningtime_lines):
+            wp = wp.strip()
+            rt_parsed = pd.to_datetime(rt.strip(), errors='coerce', dayfirst=True)
+            if wp and pd.notnull(rt_parsed):
+                manual_wavepicks.add(wp)
+                manual_running_time[wp] = rt_parsed
+        # Preview input manual
+        preview_df = pd.DataFrame.from_dict(manual_running_time, orient='index', columns=['Running Time'])
+        preview_df.index.name = 'Wavepick'
+        preview_df = preview_df.reset_index()
+        st.subheader("✅ Preview Input Manual yang Tervalidasi")
+
+        # Show more or less toggle
+        show_more = st.checkbox("See more", value=False)
+        if not show_more:
+            preview_df = preview_df.head(3)
+        st.dataframe(preview_df, use_container_width=True)
+        if show_more:
+            st.write("See less")
+        else:
+            st.write("See more")
+    else:
+        st.warning("Jumlah baris Wavepick dan Running Time tidak sama.")
 
 def convert_xls_to_xlsx(uploaded_file):
     try:
@@ -75,11 +118,10 @@ if uploaded_file:
         st.error(f"File yang diupload tidak mengandung kolom berikut: {', '.join(missing_columns)}")
         st.stop()
 
+    df['Wavepick'] = df['Wavepick'].astype(str)
     df['Confirm date'] = pd.to_datetime(df['Confirm date'], errors='coerce')
     df['Confirm time'] = pd.to_datetime(df['Confirm time'], errors='coerce').dt.time
     df['Wavepick created'] = pd.to_datetime(df['Wavepick created'], errors='coerce')
-
-    # Gabungkan confirm date + time
     df['Confirm datetime'] = pd.to_datetime(df['Confirm date'].astype(str) + ' ' + df['Confirm time'].astype(str), errors='coerce')
 
     stype_to_zona = df_zona.groupby('STYPE')['ZONA'].first().to_dict()
@@ -102,86 +144,82 @@ if uploaded_file:
 
     wavepick_c = valid_confirm[valid_confirm['Flag'] == 'C']
 
-    # 1. Rekap wavepick dengan flag C + rata-rata durasi
+    if manual_wavepicks:
+        wavepick_c = wavepick_c[wavepick_c['Wavepick'].isin(manual_wavepicks)]
+
+    if wavepick_c.empty:
+        st.warning("Tidak ditemukan data Wavepick dengan Flag 'C' yang sesuai input manual.")
+        st.stop()
+
     rekap_wavepick = wavepick_c.groupby('Wavepick').agg(
-        First_Confirm=('Confirm datetime', 'min'),
         Last_Confirm=('Confirm datetime', 'max'),
         Total_Qty=('Qty', 'sum'),
         Total_MID=('MID', 'nunique')
     ).reset_index()
+
+    rekap_wavepick['Start_Confirm'] = rekap_wavepick['Wavepick'].map(manual_running_time)
+    rekap_wavepick = rekap_wavepick[rekap_wavepick['Start_Confirm'].notna()]
+    rekap_wavepick['First_Confirm'] = rekap_wavepick['Start_Confirm']
     rekap_wavepick['Durasi_td'] = rekap_wavepick['Last_Confirm'] - rekap_wavepick['First_Confirm']
     rekap_wavepick['Durasi'] = rekap_wavepick['Durasi_td'].apply(lambda x: str(x).split('.')[0])
 
-    rata2_durasi = rekap_wavepick['Durasi_td'].mean()
-
-    # Top 3 longest wavepick
-    top3_wavepick = rekap_wavepick.copy()
-    top3_wavepick = top3_wavepick.sort_values('Durasi_td', ascending=False).head(3)
-
-    # 2. Rata-rata durasi dan kontribusi zona
-    zona_rekap = wavepick_c.groupby(['ZONA', 'Wavepick']).agg(
-        First=('Confirm datetime', 'min'),
-        Last=('Confirm datetime', 'max'),
-        Qty=('Qty', 'sum'),
-        MID=('MID', 'nunique')
-    ).reset_index()
-    zona_rekap['Durasi'] = zona_rekap['Last'] - zona_rekap['First']
-
-    top3_zona = zona_rekap.groupby('ZONA').agg(
-        RataDurasi=('Durasi', lambda x: pd.to_timedelta(x).mean())
-    ).reset_index().sort_values('RataDurasi', ascending=False).head(3)
-    top3_zona['Durasi'] = top3_zona['RataDurasi'].apply(lambda x: str(x).split('.')[0])
-
-    # Cari last confirm zone per wavepick
     last_confirm_per_wavepick = wavepick_c.loc[wavepick_c.groupby('Wavepick')['Confirm datetime'].idxmax()]
-    last_confirm_count = last_confirm_per_wavepick['ZONA'].value_counts().reset_index()
-    last_confirm_count.columns = ['ZONA', 'Total_Last_Confirm']
+    last_confirm_zona_map = last_confirm_per_wavepick.set_index('Wavepick')['ZONA'].to_dict()
+    rekap_wavepick['ZONA'] = rekap_wavepick['Wavepick'].map(last_confirm_zona_map)
 
-    zona_summary = zona_rekap.groupby('ZONA').agg(
-        Avg_Durasi=('Durasi', lambda x: str(pd.to_timedelta(x).mean()).split('.')[0]),
-        Avg_Qty=('Qty', 'mean')
-    ).reset_index()
-    zona_summary = zona_summary.merge(last_confirm_count, on='ZONA', how='left').fillna(0)
-    zona_summary['Total_Last_Confirm'] = zona_summary['Total_Last_Confirm'].astype(int)
+    rata2_durasi = rekap_wavepick['Durasi_td'].mean()
+    rata2_durasi_str = str(rata2_durasi).split('.')[0]
 
-    # 3. Operator (STYPE RB1)
     operator_df = wavepick_c[wavepick_c['STYPE'] == 'RB1'].copy()
-    first_wavepick_confirm = wavepick_c.groupby('Wavepick')['Confirm datetime'].min().to_dict()
-    operator_df['Wavepick_Start'] = operator_df['Wavepick'].map(first_wavepick_confirm)
+    operator_df['Wavepick_Start'] = operator_df['Wavepick'].map(manual_running_time)
+    operator_df['Wavepick_Start'] = pd.to_datetime(operator_df['Wavepick_Start'], errors='coerce')
     operator_df['Durasi'] = operator_df['Confirm datetime'] - operator_df['Wavepick_Start']
     operator_summary = operator_df.groupby('Wavepick').agg(
         Qty=('Qty', 'sum'),
         MID=('MID', 'nunique'),
-        Durasi=('Durasi', lambda x: str(x.max()).split('.')[0])
+        Durasi_td=('Durasi', 'max')
     ).reset_index()
+    operator_summary['Durasi'] = operator_summary['Durasi_td'].apply(lambda x: str(x).split('.')[0])
+    operator_summary = operator_summary.drop(columns='Durasi_td')
 
     rata2_durasi_operator = pd.to_timedelta(operator_df['Durasi']).mean()
+    durasi_operator_str = str(rata2_durasi_operator).split('.')[0]
 
-    # ==== SUMMARY SECTION ====
-    report_date = df['Confirm date'].dropna().dt.date.min()
-    st.header(f"📊 DC Outbound Overview - {report_date}")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("⏱️ Rata-rata Durasi Picking Hari Ini", str(rata2_durasi).split('.')[0])
-    with col2:
-        st.metric("👷 Rata-rata Durasi Picking Operator", str(rata2_durasi_operator).split('.')[0])
+    # TABS
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📄 Overview", "⏱️ Top Durasi", "🗺️ Zona Summary", "👷 Operator Summary", "❗Belum Diinput"])
 
-    st.subheader("⏱️ Top 3 Wavepick dengan Durasi Tertinggi")
-    st.dataframe(top3_wavepick[['Wavepick', 'Durasi', 'First_Confirm', 'Last_Confirm']], use_container_width=True)
+    with tab1:
+        st.metric("🔢 Total Wavepick Berjalan", len(rekap_wavepick))
+        st.caption(f"Total SPKB running yang sudah dikonfirmasi: {rekap_wavepick['Wavepick'].nunique()} SPKB")
+        col_d1, col_d2 = st.columns(2)
+        with col_d1:
+            st.metric("📦 Rata-rata Durasi Picking per Wavepick", rata2_durasi_str)
+        with col_d2:
+            st.metric("👷 Rata-rata Durasi Picking Operator", durasi_operator_str)
 
-    st.subheader("📍 Top 3 Zona dengan Durasi Tertinggi")
-    st.dataframe(top3_zona[['ZONA', 'Durasi']], use_container_width=True)
+    with tab2:
+        st.subheader("📊 Top 3 Wavepick dengan Durasi Tertinggi")
+        st.dataframe(rekap_wavepick.sort_values("Durasi_td", ascending=False).head(3)[['Wavepick', 'Durasi', 'ZONA']], use_container_width=True)
 
-    # ==== DETAIL SECTION ====
-    st.subheader("📦 Rekap Wavepick dengan Flag C")
-    st.dataframe(rekap_wavepick.drop(columns='Durasi_td', errors='ignore'), use_container_width=True)
+    with tab3:
+        st.subheader("📈 Rata-rata Durasi & Kontribusi per Zona")
+        zona_summary = rekap_wavepick.groupby("ZONA").agg(
+            Rata_rata_Durasi=('Durasi_td', 'mean'),
+            Count_Last_Confirm=('Wavepick', 'count')
+        ).reset_index()
+        zona_summary['Rata_rata_Durasi'] = zona_summary['Rata_rata_Durasi'].apply(lambda x: str(x).split('.')[0])
+        st.dataframe(zona_summary, use_container_width=True)
 
-    st.subheader("🏷️ Rata-rata Durasi & Kontribusi Zona")
-    st.dataframe(zona_summary, use_container_width=True)
+    with tab4:
+        st.subheader("👷 Rangkuman Picking Operator")
+        st.dataframe(operator_summary, use_container_width=True)
 
-    st.subheader("👷 Operator Picking Summary - STYPE RB1")
-    st.dataframe(operator_summary, use_container_width=True)
-
-else:
-    st.title("\U0001F4CA DC Outbound Overview")
-    st.info("Silakan upload file Excel untuk mulai.")
+    with tab5:
+        semua_wavepick_excel = set(df['Wavepick'].unique())
+        belum_diinput = sorted(list(semua_wavepick_excel - manual_wavepicks))
+        if belum_diinput:
+            st.subheader("🔔 Wavepick Belum Diinput Manual")
+            st.write(f"Total: {len(belum_diinput)}")
+            st.dataframe(pd.DataFrame({'Wavepick': belum_diinput}), use_container_width=True)
+        else:
+            st.success("Semua Wavepick sudah diinput manual.")

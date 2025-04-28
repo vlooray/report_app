@@ -13,6 +13,12 @@ import datetime
 import io
 import xlrd
 from openpyxl import Workbook
+from PIL import Image
+import base64
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+import time
+import os
 
 st.set_page_config(page_title="WFTP Project", layout="wide")
 
@@ -223,3 +229,45 @@ if uploaded_file:
             st.dataframe(pd.DataFrame({'Wavepick': belum_diinput}), use_container_width=True)
         else:
             st.success("Semua Wavepick sudah diinput manual.")
+
+# Fitur Share sebagai Gambar atau Link
+show_share_section = st.checkbox("🔗 Tampilkan Menu Share Ringkasan")
+if show_share_section:
+    st.info("Fitur ini memungkinkan Anda membagikan hasil dengan cara mudah.")
+    st.markdown("- Gunakan tombol screenshot browser untuk mengambil tampilan dashboard sebagai gambar.")
+    st.markdown("- Atau deploy app ini dan kirimkan URL dashboard ke pihak terkait.")
+
+# Capture Screenshot Functionality using Selenium
+def capture_screenshot():
+    # Setting up Selenium with Chrome
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")  # Run Chrome in headless mode
+    driver = webdriver.Chrome(options=chrome_options)
+
+    # Open the Streamlit URL
+    driver.get('http://localhost:8501')  # Make sure Streamlit is running on localhost:8501
+
+    # Wait for the page to load completely
+    time.sleep(5)
+
+    # Capture the screenshot
+    screenshot_path = "wavepick_dashboard.png"
+    driver.save_screenshot(screenshot_path)
+
+    # Close the browser window
+    driver.quit()
+
+    return screenshot_path
+
+# Button to trigger screenshot capture
+if st.button("Capture Screenshot Dashboard"):
+    screenshot_path = capture_screenshot()
+
+    # Provide download link for the screenshot
+    with open(screenshot_path, "rb") as file:
+        btn = st.download_button(
+            label="Download Screenshot",
+            data=file,
+            file_name="wavepick_dashboard.png",
+            mime="image/png"
+        )
